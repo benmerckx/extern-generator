@@ -78,7 +78,10 @@ class Avail {
 		return m == null ? 0 : m;
 	}
 
-	// an attribute's meaning on macOS, or null
+	// the platform whose availability counts (clang's name: macos, ios)
+	public static var platform = "macos";
+
+	// an attribute's meaning on the platform, or null
 	static function attr(kind:String, args:String):Null<Availability> {
 		var t = tokens(args);
 		while (t.length > 0 && (t[0] == "Inherited" || t[0] == "Implicit"))
@@ -88,7 +91,7 @@ class Avail {
 				{unavailable: true, deprecated: null};
 			case "DeprecatedAttr":
 				{unavailable: false, deprecated: t.length > 0 ? t[0] : ""};
-			case "AvailabilityAttr" if (t.length >= 4 && t[0] == "macos"):
+			case "AvailabilityAttr" if (t.length >= 4 && t[0] == platform):
 				var unavailable = t[4] == "Unavailable" || t[3] != "0";
 				var dep = t[2] != "0" && major(t[2]) < 100000; // 100000: API_TO_BE_DEPRECATED
 				var msg = t.length > (t[4] == "Unavailable" ? 5 : 4) ? t[t[4] == "Unavailable" ? 5 : 4] : "";

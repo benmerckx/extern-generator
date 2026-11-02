@@ -17,6 +17,9 @@ class Reader {
 	public var typedefs = new Map<String, Typedef>();
 	public var functions = new Map<String, CFunc>();
 	public var vars = new Map<String, CVar>();
+	// `static const` constants of the headers (NSNotFound, NSControlStateValueOn):
+	// no symbol, their initializers as C expressions (Macros evaluates them)
+	public var constants:Array<{name:String, body:String, origin:Origin}> = [];
 	public var bridges(get, never):Map<String, {objc:Null<String>, mutable:Null<String>}>;
 
 	function get_bridges()
@@ -83,30 +86,83 @@ class Reader {
 	public function read(root:Dynamic) {
 		locate(root);
 		var inner:Array<Dynamic> = root.inner;
-		for (n in inner) {
-			var at = locate(n);
-			var o = originOf(at.file);
-			switch (n.kind : String) {
-				case "ObjCInterfaceDecl":
-					interfaceDecl(n, o, at.span);
-				case "ObjCCategoryDecl":
-					categoryDecl(n, o);
-				case "ObjCProtocolDecl":
-					protocolDecl(n, o, at.span);
-				case "EnumDecl":
-					enumDecl(n, o);
-				case "RecordDecl":
-					recordDecl(n, o);
-				case "TypedefDecl":
-					typedefDecl(n, o);
-				case "FunctionDecl":
-					functionDecl(n, o);
-				case "VarDecl":
-					varDecl(n, o);
-				case _:
-					walkChildren(n);
-			}
+		for (n in inner)
+			readNode(n);
+	}
+
+	// a declaration at the top level (in dump order: locations name their file
+	// only when it changed)
+	public function readNode(n:Dynamic) {
+		var at = locate(n);
+		var o = originOf(at.file);
+		switch (n.kind : String) {
+			case "ObjCInterfaceDecl":
+				interfaceDecl(n, o, at.span);
+			case "ObjCCategoryDecl":
+				categoryDecl(n, o);
+			case "ObjCProtocolDecl":
+				protocolDecl(n, o, at.span);
+			case "EnumDecl":
+				enumDecl(n, o);
+			case "RecordDecl":
+				recordDecl(n, o);
+			case "TypedefDecl":
+				typedefDecl(n, o);
+			case "FunctionDecl":
+				functionDecl(n, o);
+			case "VarDecl":
+				varDecl(n, o);
+			case _:
+				walkChildren(n);
 		}
+	}
+
+	// reads a dump without holding it: each top-level declaration (an element
+	// of the root's `inner`) cut out of the file and parsed alone, in order
+	// (an SDK's dump is gigabytes: more than a string holds)
+	public function readFile(path:String) {
+		var input = sys.io.File.read(path, true);
+		var chunk = haxe.io.Bytes.alloc(1 << 24);
+		var node = new haxe.io.BytesBuffer();
+		var depth = 0, inString = false, escaped = false, inInner = false, capturing = false;
+		while (true) {
+			var n = try input.readBytes(chunk, 0, chunk.length) catch (_:haxe.io.Eof) 0;
+			if (n == 0) break;
+			var start = capturing ? 0 : -1;
+			for (i in 0...n) {
+				var c = chunk.get(i);
+				if (inString) {
+					if (escaped) escaped = false;
+					else if (c == "\\".code) escaped = true;
+					else if (c == '"'.code) inString = false;
+					continue;
+				}
+				switch c {
+					case '"'.code:
+						inString = true;
+					case "{".code | "[".code:
+						// the root's last member, `inner`, is the only array at its level
+						if (depth == 1 && c == "[".code) inInner = true;
+						else if (depth == 2 && inInner && c == "{".code) {
+							capturing = true;
+							start = i;
+						}
+						depth++;
+					case "}".code | "]".code:
+						depth--;
+						if (depth == 2 && capturing) {
+							node.addBytes(chunk, start, i + 1 - start);
+							readNode(haxe.Json.parse(node.getBytes().toString()));
+							node = new haxe.io.BytesBuffer();
+							capturing = false;
+							start = -1;
+						}
+					case _:
+				}
+			}
+			if (capturing) node.addBytes(chunk, start, n - start);
+		}
+		input.close();
 	}
 
 	function ctype(t:Dynamic):CType {
@@ -399,8 +455,37 @@ class Reader {
 
 	// an `extern` variable; `const` at its top level (`NSString *const`,
 	// `const CGRect`) a constant
+	// an initializer as a C expression of literals, operators and names, or null
+	static function expr(n:Dynamic):Null<String> {
+		var inner:Array<Dynamic> = n.inner;
+		return switch (n.kind : String) {
+			case "IntegerLiteral" | "FloatingLiteral": n.value;
+			case "ImplicitCastExpr" | "CStyleCastExpr" | "ConstantExpr" | "ParenExpr" if (inner != null && inner.length == 1):
+				var e = expr(inner[0]);
+				e == null ? null : "(" + e + ")";
+			case "UnaryOperator" if (inner != null && inner.length == 1 && ["-", "~", "+"].indexOf(n.opcode) >= 0):
+				var e = expr(inner[0]);
+				e == null ? null : n.opcode + e;
+			case "BinaryOperator" if (inner != null && inner.length == 2 && ["|", "&", "^", "<<", ">>", "+", "-", "*", "/"].indexOf(n.opcode) >= 0):
+				var a = expr(inner[0]), b = expr(inner[1]);
+				a == null || b == null ? null : "(" + a + " " + n.opcode + " " + b + ")";
+			case "DeclRefExpr" if (n.referencedDecl != null && n.referencedDecl.name != null): n.referencedDecl.name;
+			case _: null;
+		}
+	}
+
 	function varDecl(n:Dynamic, o:Origin) {
 		walkChildren(n);
+		if (n.storageClass == "static") {
+			// (its initializer, beside attributes: availability)
+			var inner:Array<Dynamic> = n.inner == null ? null : [for (c in (n.inner : Array<Dynamic>)) if (!StringTools.endsWith(c.kind, "Attr")) c];
+			var d = ctype(n.type).desugared.trim();
+			if (inner != null && inner.length == 1 && d.indexOf("*") < 0 && (d.startsWith("const ") || d.endsWith(" const"))) {
+				var e = expr(inner[0]);
+				if (e != null) constants.push({name: n.name, body: e, origin: o});
+			}
+			return;
+		}
 		if (n.storageClass != "extern") return;
 		var name:String = n.name;
 		if (vars.exists(name)) return;

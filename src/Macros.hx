@@ -43,6 +43,15 @@ class Macros {
 		}
 	}
 
+	// the headers' `static const` constants (Reader.constants), as macros of their
+	// value (a macro of the name wins)
+	public function addConstants(cs:Array<Macro>)
+		for (c in cs)
+			if (!byName.exists(c.name)) {
+				list.push(c);
+				byName.set(c.name, c);
+			}
+
 	public function addEnums(enums:Array<EnumInfo>)
 		for (e in enums)
 			for (c in e.consts)

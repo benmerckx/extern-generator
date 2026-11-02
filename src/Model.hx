@@ -28,9 +28,15 @@ class Origin {
 			// a framework inside another one (CoreServices' CarbonCore): its own path
 			var outer = path.substring(0, s).indexOf(".framework/");
 			var lib = outer >= 0 ? path.substring(path.indexOf("/System/Library/Frameworks/"), i) + ".framework/" + name : null;
+			// a sub-framework an umbrella re-exports (ARKit's ARKitCore): /System/Library/SubFrameworks
+			if (outer < 0 && path.indexOf("/System/Library/SubFrameworks/") >= 0) lib = '/System/Library/SubFrameworks/$name.framework/$name';
 			return new Origin(name, lib, header);
 		}
 		if (path.indexOf("/usr/include/objc/") >= 0) return new Origin("objc", "/usr/lib/libobjc.A.dylib", header);
+		// libSystem's libraries an app uses directly (GCD, os_log's and os_unfair_lock's
+		// functions, XPC): in scope as frameworks of their directory's name
+		for (d in ["dispatch", "os", "xpc"])
+			if (path.indexOf('/usr/include/$d/') >= 0) return new Origin(d, "/usr/lib/libSystem.B.dylib", header);
 		return new Origin("", null, header);
 	}
 }

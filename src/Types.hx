@@ -201,8 +201,21 @@ class Types {
 		}
 	}
 
+	// clang spells an attribute given by a macro as the macro's name in the type
+	// (`NW_RETURNS_RETAINED nw_connection_t _Nonnull`, `WK_SWIFT_UI_ACTOR void
+	// (^)(...)`, `CF_NOESCAPE`, `NS_REFINED_FOR_SWIFT`): an upper-case word with
+	// an underscore that no typedef names is one, dropped (what it says the
+	// declaration's attributes say: NSReturnsRetainedAttr, Reader)
+	static var ATTRIBUTE_MACRO = ~/\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b/g;
+
+	function withoutAttributeMacros(s:String):String {
+		if (!ATTRIBUTE_MACRO.match(s)) return s;
+		return ATTRIBUTE_MACRO.map(s, m -> r.typedefs.exists(m.matched(0)) ? m.matched(0) : "").trim();
+	}
+
 	// `self`: the class whose declaration this is (instancetype)
 	public function map(t:CType, self:String, inStruct = false, depth = 0):HType {
+		t = {qual: withoutAttributeMacros(t.qual), desugared: withoutAttributeMacros(t.desugared)};
 		if (depth > 16) throw new Skip("typedef cycle", t.qual + " = " + t.desugared);
 		if (isInstancetype(t)) return HClass(self, nullable(t.qual), selfArgs);
 		// a type parameter (`ObjectType`, `__kindof KeyType`): an id

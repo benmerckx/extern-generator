@@ -34,6 +34,7 @@ class ClassState {
 	public var names = new Map<String, FieldRec>(); // instance fields, inherited too
 	public var sels = new Map<String, FieldRec>(); // instance selectors, inherited too
 	public var props = new Map<String, {readonly:Bool, setter:String}>(); // instance properties, inherited too
+	public var getOnly = new Map<String, Bool>(); // properties whose Haxe variable is (get, never), a setter redeclared beside it
 	public var initLike = new Map<String, FieldRec>(); // inherited instance methods returning instancetype, still available
 	public var factories = new Map<String, FieldRec>(); // inherited class methods returning instancetype
 	public var staticNames = new Map<String, FieldRec>(); // own only
@@ -47,6 +48,7 @@ class ClassState {
 		s.names = names.copy();
 		s.sels = sels.copy();
 		s.props = props.copy();
+		s.getOnly = getOnly.copy();
 		s.initLike = initLike.copy();
 		s.factories = factories.copy();
 		return s;
@@ -1272,7 +1274,9 @@ class Gen {
 					if (mine != null) {
 						var g = st.names.get(pp.name);
 						if (g == null || g.sel != pp.get.sel || !g.accessor) why = "property " + pp.objcName + " is named otherwise here";
-						else if (!pp.readonly && mine.readonly) why = "property " + pp.objcName + " is readonly here";
+						// (or readwrite through a setter beside a superclass's readonly variable:
+						// Haxe's variable stays (get, never), UIAction's title for UIMenuLeaf's)
+						else if (!pp.readonly && (mine.readonly || st.getOnly.exists(pp.objcName))) why = "property " + pp.objcName + " is readonly here";
 						if (why != null) break;
 						continue;
 					}
@@ -1305,6 +1309,14 @@ class Gen {
 				st.props.set(pp.objcName, {readonly: pp.readonly, setter: pp.set != null ? pp.set.sel : null});
 				tally(count, "protocol members redeclared under the protocol's names");
 			}
+			// (the protocol's properties the class does not redeclare, optional ones
+			// too, are still its fields to Haxe: a subclass declaring one again would
+			// redefine it, NSObjectProtocol's debugDescription)
+			for (pp in info.props)
+				if (!st.props.exists(pp.objcName)) {
+					st.props.set(pp.objcName, {readonly: pp.readonly, setter: pp.set != null ? pp.set.sel : null});
+					if (!st.names.exists(pp.name)) st.names.set(pp.name, pp.get);
+				}
 			function mark(q:String) {
 				st.adopted.set(q, true);
 				for (x in protos.get(q).protocols)
@@ -1447,6 +1459,7 @@ class Gen {
 								st.names.set(f.name, f);
 								st.sels.set(setSel, f);
 								st.props.set(m.name, {readonly: false, setter: setSel});
+								st.getOnly.set(m.name, true);
 								tally(count, "readwrite redeclarations (setter only)");
 							} else skip("property redeclared (inherited)");
 							continue;
@@ -2070,11 +2083,145 @@ class Gen {
 			+ "}\n"
 	];
 
+	// A Haxe type's name starts with an uppercase letter (a lowercase one reads
+	// as a package): a header's constants class (gssapi.h's), a framework's
+	// functions (vmnet's) and C's objects of lowercase typedefs
+	// (vImageConverterRef's) are capitalized, in their definitions and every
+	// reference; the C and Objective-C names (fields, metadata) stay.
+	// a deprecated class whose name differs only in case from another's in its
+	// package (Matter's MTRBaseClusterOta..., a deprecated alias of
+	// MTRBaseClusterOTA...): one file where file names ignore case (macOS's), so
+	// it goes, and references to it name the other (write)
+	static var caseTwin = new Map<String, String>();
+
+	static function upper(s:String):String {
+		var twin = caseTwin.get(s);
+		if (twin != null) return twin;
+		var c = s.charCodeAt(0);
+		return c >= "a".code && c <= "z".code ? s.charAt(0).toUpperCase() + s.substr(1) : s;
+	}
+
+	static function upperPath(p:TypePath) {
+		p.name = upper(p.name);
+		if (p.sub != null) p.sub = upper(p.sub);
+		if (p.params != null)
+			for (x in p.params)
+				switch x {
+					case TPType(t): upperType(t);
+					case _:
+				}
+	}
+
+	static function upperType(t:Null<ComplexType>) {
+		if (t == null) return;
+		switch t {
+			case TPath(p): upperPath(p);
+			case TFunction(args, ret):
+				for (a in args)
+					upperType(a);
+				upperType(ret);
+			case TAnonymous(fs):
+				for (f in fs)
+					upperField(f);
+			case TParent(t) | TOptional(t) | TNamed(_, t): upperType(t);
+			case TExtend(ps, fs):
+				for (p in ps)
+					upperPath(p);
+				for (f in fs)
+					upperField(f);
+			case TIntersection(ts):
+				for (t in ts)
+					upperType(t);
+		}
+	}
+
+	static function upperParams(ps:Null<Array<TypeParamDecl>>) {
+		if (ps != null)
+			for (p in ps) {
+				if (p.constraints != null)
+					for (c in p.constraints)
+						upperType(c);
+				upperType(p.defaultType);
+			}
+	}
+
+	static function upperField(f:Field)
+		switch f.kind {
+			case FVar(t, _) | FProp(_, _, t, _): upperType(t);
+			case FFun(fn):
+				upperParams(fn.params);
+				for (a in fn.args)
+					upperType(a.type);
+				upperType(fn.ret);
+		}
+
+	static function typeNames(td:TypeDefinition, mod:Module) {
+		td.name = upper(td.name);
+		upperParams(td.params);
+		switch td.kind {
+			case TDClass(sup, ifs, _):
+				if (sup != null) upperPath(sup);
+				if (ifs != null)
+					for (i in ifs)
+						upperPath(i);
+			case TDAbstract(t, flags, from, to):
+				upperType(t);
+				if (flags != null)
+					for (f in flags)
+						switch f {
+							case AbFrom(x) | AbTo(x): upperType(x);
+							case _:
+						}
+				if (from != null)
+					for (x in from)
+						upperType(x);
+				if (to != null)
+					for (x in to)
+						upperType(x);
+			case TDAlias(t): upperType(t);
+			case _:
+		}
+		for (f in td.fields)
+			upperField(f);
+		var imports = [for (k in mod.imports.keys()) k];
+		mod.imports.clear();
+		for (i in imports) {
+			var p = i.split(".");
+			p.push(upper(p.pop()));
+			mod.imports.set(p.join("."), true);
+		}
+	}
+
 	public function write(out:String):Array<String> {
 		var printer = new haxe.macro.Printer("\t");
 		var modules = [];
 		var names = new Map<String, Bool>();
+		// (classes and enums: Matter's are the SDK's only twins)
+		var byLower = new Map<String, {name:String, deprecated:Bool}>();
+		var named:Array<{name:String, pack:String, deprecated:Bool}> = [];
+		for (n => c in classes)
+			named.push({name: n, pack: packOf(c.origin), deprecated: c.avail != null && c.avail.deprecated != null});
+		for (n => e in enumsUsed)
+			named.push({name: n, pack: typePack(n, e.origin), deprecated: e.avail != null && e.avail.deprecated != null});
+		named.sort((a, b) -> Reflect.compare(a.name, b.name));
+		for (t in named) {
+			var key = t.pack + "." + t.name.toLowerCase();
+			var other = byLower.get(key);
+			if (other == null) {
+				byLower.set(key, t);
+				continue;
+			}
+			var drop = t.deprecated || !other.deprecated ? t : other, keep = drop == t ? other : t;
+			caseTwin.set(drop.name, keep.name);
+			byLower.set(key, keep);
+		}
 		function emit(td:TypeDefinition, mod:Module) {
+			var twin = caseTwin.get(td.name);
+			if (twin != null) {
+				skip("type whose name differs only in case from another's (deprecated)", td.name + ": " + twin + " instead");
+				return;
+			}
+			typeNames(td, mod);
 			var dir = out + "/" + td.pack.join("/");
 			sys.FileSystem.createDirectory(dir);
 			var b = new StringBuf();

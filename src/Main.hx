@@ -2,7 +2,7 @@
 // classes for hxmc (its docs/interop.md, "Objective-C"), from clang's AST of
 // `#import <AppKit/AppKit.h>`.
 //
-//   objc-extern-gen <out-dir> [--json ast.json --text ast.txt [--macros macros.txt]] [--frameworks Foundation,AppKit,...] [--keep-dumps] [--check]
+//   objc-extern-gen <out-dir> [--json ast.json --text ast.txt [--macros macros.txt]] [--frameworks Foundation,AppKit,...] [--platform macos|ios] [--keep-dumps] [--check]
 //
 // Without --json/--text it runs clang (twice: the JSON dump for the
 // declarations, the text dump for their availability, which the JSON dump
@@ -24,6 +24,13 @@ class Main {
 	// the umbrella header that declares framework `f`: its own, or its outer
 	// framework's for a sub-framework (HIServices: ApplicationServices)
 	static function umbrella(sdk:String, f:String):String {
+		// libSystem's libraries in scope (Model's Origin): their headers
+		switch f {
+			case "dispatch": return "<dispatch/dispatch.h>";
+			case "xpc": return "<xpc/xpc.h>";
+			case "os": return "<os/log.h>\n#import <os/lock.h>\n#import <os/signpost.h>\n#import <os/workgroup.h>";
+			case _:
+		}
 		var dir = sdk + "/System/Library/Frameworks";
 		if (!sys.FileSystem.exists('$dir/$f.framework'))
 			for (u in sys.FileSystem.readDirectory(dir))
@@ -36,6 +43,7 @@ class Main {
 
 	static function main() {
 		var args = Sys.args();
+		var platform = "macos";
 		var out:Null<String> = null, json:Null<String> = null, text:Null<String> = null, macrosFile:Null<String> = null, check = false, keep = false;
 		var scope = ["Foundation", "AppKit", "CoreGraphics", "CoreText", "QuartzCore", "UniformTypeIdentifiers"];
 		var i = 0;
@@ -47,12 +55,13 @@ class Main {
 				case "--frameworks": scope = args[++i].split(",");
 				case "--check": check = true;
 				case "--keep-dumps": keep = true;
+				case "--platform": platform = args[++i];
 				case a: out = a;
 			}
 			i++;
 		}
 		if (out == null) {
-			Sys.println("usage: objc-extern-gen <out-dir> [--json ast.json --text ast.txt [--macros macros.txt]] [--frameworks Foundation,AppKit,...] [--keep-dumps] [--check]");
+			Sys.println("usage: objc-extern-gen <out-dir> [--json ast.json --text ast.txt [--macros macros.txt]] [--frameworks Foundation,AppKit,...] [--platform macos|ios] [--keep-dumps] [--check]");
 			Sys.exit(1);
 		}
 		sys.FileSystem.createDirectory(out);
@@ -60,31 +69,32 @@ class Main {
 		var tmp = out + "/.clang", ran = json == null || text == null;
 		if (ran) {
 			sys.FileSystem.createDirectory(tmp);
-			shell('xcrun --show-sdk-path > $tmp/sdk-path');
+			// (iOS: the device's SDK, arm64; macOS: the host's)
+			var sdkName = platform == "ios" ? "iphoneos" : "macosx";
+			shell('xcrun --sdk $sdkName --show-sdk-path > $tmp/sdk-path');
 			var sdk = StringTools.trim(sys.io.File.getContent('$tmp/sdk-path'));
 			sys.io.File.saveContent(tmp + "/sdk.m", [for (f in scope) '#import ${umbrella(sdk, f)}\n'].join(""));
 			json = tmp + "/ast.json";
 			text = tmp + "/ast.txt";
-			var cc = "clang -fsyntax-only -x objective-c";
+			var cc = "clang -fsyntax-only -x objective-c" + (platform == "ios" ? ' -target arm64-apple-ios17.0 -isysroot $sdk' : "");
 			shell('$cc -Xclang -ast-dump=json $tmp/sdk.m > $json');
 			shell('$cc -Xclang -ast-dump -fno-color-diagnostics $tmp/sdk.m > $text');
 			macrosFile = tmp + "/macros.txt";
-			shell('clang -E -dD -x objective-c $tmp/sdk.m > $macrosFile');
+			shell('clang -E -dD -x objective-c' + (platform == "ios" ? ' -target arm64-apple-ios17.0 -isysroot $sdk' : "") + ' $tmp/sdk.m > $macrosFile');
 			t = stamp("clang (json and text dumps)", t);
 		}
+		Avail.platform = platform;
 		var avail = new Avail();
 		avail.read(text);
 		t = stamp("availability (text dump)", t);
-		var root:Dynamic = haxe.Json.parse(sys.io.File.getContent(json));
-		t = stamp("haxe.Json.parse", t);
 		var reader = new Reader(avail);
-		reader.read(root);
-		root = null;
+		reader.readFile(json);
 		t = stamp("read", t);
 		var gen = new Gen(reader, scope);
 		if (macrosFile != null) {
 			var ms = new Macros();
 			ms.read(macrosFile);
+			ms.addConstants(reader.constants);
 			ms.addEnums(reader.enums);
 			gen.macros = ms;
 			t = stamp("macros", t);
