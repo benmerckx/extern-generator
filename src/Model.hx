@@ -27,7 +27,11 @@ class Origin {
 			var name = path.substring(s + 1, i);
 			// a framework inside another one (CoreServices' CarbonCore): its own path
 			var outer = path.substring(0, s).indexOf(".framework/");
-			var lib = outer >= 0 ? path.substring(path.indexOf("/System/Library/Frameworks/"), i) + ".framework/" + name : null;
+			// (Mac Catalyst's UIKit and the other iOS frameworks are in /System/iOSSupport: a framework
+			// there is one of its name, as on iOS, and Catalyst's linker finds it there)
+			var root = path.indexOf("/System/iOSSupport/");
+			if (root < 0) root = path.indexOf("/System/Library/Frameworks/");
+			var lib = outer >= 0 ? path.substring(root, i) + ".framework/" + name : null;
 			// a sub-framework an umbrella re-exports (ARKit's ARKitCore): /System/Library/SubFrameworks
 			if (outer < 0 && path.indexOf("/System/Library/SubFrameworks/") >= 0) lib = '/System/Library/SubFrameworks/$name.framework/$name';
 			return new Origin(name, lib, header);

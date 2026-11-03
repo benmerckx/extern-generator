@@ -2,7 +2,7 @@
 // classes for hxmc (its docs/interop.md, "Objective-C"), from clang's AST of
 // `#import <AppKit/AppKit.h>`.
 //
-//   objc-extern-gen <out-dir> [--json ast.json --text ast.txt [--macros macros.txt]] [--frameworks Foundation,AppKit,...] [--platform macos|ios] [--keep-dumps] [--check]
+//   objc-extern-gen <out-dir> [--json ast.json --text ast.txt [--macros macros.txt]] [--frameworks Foundation,AppKit,...] [--platform macos|ios|maccatalyst] [--keep-dumps] [--check]
 //
 // Without --json/--text it runs clang (twice: the JSON dump for the
 // declarations, the text dump for their availability, which the JSON dump
@@ -61,7 +61,7 @@ class Main {
 			i++;
 		}
 		if (out == null) {
-			Sys.println("usage: objc-extern-gen <out-dir> [--json ast.json --text ast.txt [--macros macros.txt]] [--frameworks Foundation,AppKit,...] [--platform macos|ios] [--keep-dumps] [--check]");
+			Sys.println("usage: objc-extern-gen <out-dir> [--json ast.json --text ast.txt [--macros macros.txt]] [--frameworks Foundation,AppKit,...] [--platform macos|ios|maccatalyst] [--keep-dumps] [--check]");
 			Sys.exit(1);
 		}
 		sys.FileSystem.createDirectory(out);
@@ -69,18 +69,24 @@ class Main {
 		var tmp = out + "/.clang", ran = json == null || text == null;
 		if (ran) {
 			sys.FileSystem.createDirectory(tmp);
-			// (iOS: the device's SDK, arm64; macOS: the host's)
+			// (iOS: the device's SDK, arm64; macOS: the host's; Mac Catalyst: the
+			// macOS SDK with its iOS frameworks, /System/iOSSupport)
 			var sdkName = platform == "ios" ? "iphoneos" : "macosx";
 			shell('xcrun --sdk $sdkName --show-sdk-path > $tmp/sdk-path');
 			var sdk = StringTools.trim(sys.io.File.getContent('$tmp/sdk-path'));
 			sys.io.File.saveContent(tmp + "/sdk.m", [for (f in scope) '#import ${umbrella(sdk, f)}\n'].join(""));
 			json = tmp + "/ast.json";
 			text = tmp + "/ast.txt";
-			var cc = "clang -fsyntax-only -x objective-c" + (platform == "ios" ? ' -target arm64-apple-ios17.0 -isysroot $sdk' : "");
+			var target = switch platform {
+				case "ios": ' -target arm64-apple-ios17.0 -isysroot $sdk';
+				case "maccatalyst": ' -target arm64-apple-ios17.0-macabi -isysroot $sdk -iframework $sdk/System/iOSSupport/System/Library/Frameworks -isystem $sdk/System/iOSSupport/usr/include';
+				case _: "";
+			}
+			var cc = "clang -fsyntax-only -x objective-c" + target;
 			shell('$cc -Xclang -ast-dump=json $tmp/sdk.m > $json');
 			shell('$cc -Xclang -ast-dump -fno-color-diagnostics $tmp/sdk.m > $text');
 			macrosFile = tmp + "/macros.txt";
-			shell('clang -E -dD -x objective-c' + (platform == "ios" ? ' -target arm64-apple-ios17.0 -isysroot $sdk' : "") + ' $tmp/sdk.m > $macrosFile');
+			shell('clang -E -dD -x objective-c' + target + ' $tmp/sdk.m > $macrosFile');
 			t = stamp("clang (json and text dumps)", t);
 		}
 		Avail.platform = platform;
