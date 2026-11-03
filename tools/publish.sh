@@ -14,7 +14,7 @@ for dir in "$libs"/*/; do
 		git rm -rq --ignore-unmatch . > /dev/null
 		cp -R "$dir/." .
 		git add -A
-		if git diff --cached --quiet; then echo "$lib: unchanged"; else git commit -qm "$msg" && git push -q origin HEAD:main && echo "$lib: pushed"; fi
+		if git diff --cached --quiet; then echo "$lib: unchanged"; else git commit -qm "$msg" && git push -q origin HEAD:master && echo "$lib: pushed"; fi
 	)
 done
 rm -rf "$work"
