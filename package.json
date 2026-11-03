@@ -1,5 +1,5 @@
 {
-  "name": "hxmc-objc-extern-gen",
+  "name": "extern-generator",
   "private": true,
   "scripts": {
     "build": "haxe build.hxml",

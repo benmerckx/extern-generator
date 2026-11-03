@@ -19,6 +19,9 @@ class Origin {
 		this.header = header;
 	}
 
+	// the sub-frameworks an umbrella re-exports: the umbrella (Sdk.reexports)
+	public static var umbrellas = new Map<String, String>();
+
 	public static function of(path:String):Origin {
 		var header = haxe.io.Path.withoutExtension(haxe.io.Path.withoutDirectory(path));
 		var i = path.lastIndexOf(".framework/");
@@ -32,8 +35,13 @@ class Origin {
 			var root = path.indexOf("/System/iOSSupport/");
 			if (root < 0) root = path.indexOf("/System/Library/Frameworks/");
 			var lib = outer >= 0 ? path.substring(root, i) + ".framework/" + name : null;
-			// a sub-framework an umbrella re-exports (ARKit's ARKitCore): /System/Library/SubFrameworks
-			if (outer < 0 && path.indexOf("/System/Library/SubFrameworks/") >= 0) lib = '/System/Library/SubFrameworks/$name.framework/$name';
+			// a sub-framework (/System/Library/SubFrameworks): the umbrella's that
+			// re-exports it (ARKitCore: ARKit's, as Mac Catalyst's ARKit has it
+			// itself), else its own
+			if (outer < 0 && path.indexOf("/System/Library/SubFrameworks/") >= 0) {
+				if (umbrellas.exists(name)) return new Origin(umbrellas.get(name), null, header);
+				lib = '/System/Library/SubFrameworks/$name.framework/$name';
+			}
 			return new Origin(name, lib, header);
 		}
 		if (path.indexOf("/usr/include/objc/") >= 0) return new Origin("objc", "/usr/lib/libobjc.A.dylib", header);

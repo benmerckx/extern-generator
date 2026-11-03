@@ -1,27 +1,45 @@
-# hxmc-objc-extern-gen
+# extern-generator
 
 > **Experimental.** A work in progress, made to find out what the declarations should look like. Expect the output, the rules behind it and the tool itself to change.
 
-Generates Haxe extern declarations of the macOS SDK's Objective-C and C APIs (Foundation, AppKit, Core Graphics, Core Text, Core Animation and Uniform Type Identifiers by default) for [hxmc](https://github.com/benmerckx/hxmc)'s Objective-C interop, from clang's AST of the SDK's headers.
+Generates Haxe extern declarations of the Apple SDKs' Objective-C and C APIs (macOS, iOS and Mac Catalyst) for [hxmc](https://github.com/benmerckx/hxmc)'s Objective-C interop, from clang's AST of the SDKs' headers, and splits them into the libraries below.
 
-Using the generated declarations needs hxmc's Objective-C interop, which is not published yet. The generator itself is plain Haxe and builds with the published hxmc.
+The generator is plain Haxe and builds with hxmc.
+
+## Libraries
+
+An app depends on its platform's library, which brings the shared ones:
+
+| platform | library | with |
+|---|---|---|
+| macOS | [apple-appkit](https://github.com/hx-objc/apple-appkit) | [apple-shared](https://github.com/hx-objc/apple-shared), [apple-shared-mac](https://github.com/hx-objc/apple-shared-mac) |
+| iOS | [apple-uikit](https://github.com/hx-objc/apple-uikit) | apple-shared, [apple-shared-uikit](https://github.com/hx-objc/apple-shared-uikit) |
+| Mac Catalyst | [apple-catalyst](https://github.com/hx-objc/apple-catalyst) | apple-shared, apple-shared-uikit, apple-shared-mac |
+
+Optional: [apple-matter](https://github.com/hx-objc/apple-matter) (Matter, the SDKs' largest framework, on every platform) and [apple-appkit-legacy](https://github.com/hx-objc/apple-appkit-legacy) (macOS's frameworks gone in all but name, OpenGL, QuickDraw, Tcl, Ruby, ..., and the classes deprecated as a whole that nothing else names).
+
+Each module is in the library of the platforms where its text is the same (`objc-extern-gen slice`, src/Slice.hx), so a platform's libraries have each type once, and together are the platform's whole output. They refer to each other's types by their paths, without declaring a dependency where they cannot (a shared library on a platform's): a library used without the ones it refers to fails where such a type is used, not before.
 
 ## Use
 
-macOS with Xcode's command line tools (clang) and node:
+macOS with Xcode (clang, the macOS and iOS SDKs) and node:
 
 ```sh
 npm install
-npm run gen        # builds bin/objc-extern-gen, writes out/
+npm run gen                   # builds bin/objc-extern-gen, writes out/ (a few frameworks)
+tools/libs.sh out/sdk         # the three platforms, the whole SDKs, and the libraries in out/sdk/libs
+tools/publish.sh out/sdk/libs # pushes the libraries to their repositories
 ```
 
-`bin/objc-extern-gen <out-dir> [--frameworks Foundation,AppKit,...] [--platform macos|ios|maccatalyst] [--check]` writes a package per framework (`appkit.NSView`, `foundation.NSString`, ...), one module per class or protocol, `skipped.txt` (what was left out and why) and, with `--check`, `ObjcExternsCheck.hx`, a program naming every type. A framework inside another (`HIServices`, the Accessibility API, in `ApplicationServices`) is read through its outer framework's header; one in `/System/Library/SubFrameworks` (`ARKitCore`, which `ARKit` re-exports) is in scope by its own name. `dispatch`, `os` and `xpc` name libSystem's libraries (GCD, os_log's and os_unfair_lock's functions, XPC). `--platform ios` reads the iOS SDK (arm64) and iOS's availability; `--platform maccatalyst` the macOS SDK with its iOS frameworks (`/System/iOSSupport`) and Mac Catalyst's availability (clang infers it from iOS's), a framework there named as on iOS (the linker finds its Catalyst build). The whole SDK works: every framework with an umbrella header (`Kerberos` aside, which redefines `GSS`'s types; `CoreHaptics` imported first, before `AVFAudio`'s `AVAudioSession` is unavailable). The dump is read one top-level declaration at a time (an SDK's is gigabytes). `--json` and `--text` read existing dumps instead of running clang; `--keep-dumps` keeps the ones it makes (in `<out-dir>/.clang`).
+`bin/objc-extern-gen <out-dir> [--frameworks all|Foundation,AppKit,...] [--platform macos|ios|maccatalyst] [--check]` writes a package per framework (`appkit.NSView`, `foundation.NSString`, ...), one module per class or protocol, `skipped.txt` (what was left out and why) and, with `--check`, `ObjcExternsCheck.hx`, a program naming every type. `--frameworks all` is the whole SDK: every framework with an umbrella header that imports on its own and that the platform links (its `.tbd` names the platform: Mac Catalyst links 55 fewer than macOS), `Kerberos` aside (it redefines `GSS`'s types), `CoreHaptics` and `NetworkExtension` imported first (else `AVFAudio`'s `AVAudioSession` and `AccessorySetupKit`'s `ASAccessory` are unavailable to them), AppKit not on Mac Catalyst. A framework inside another (`HIServices`, the Accessibility API, in `ApplicationServices`) is read through its outer framework's header. One in `/System/Library/SubFrameworks` that an umbrella re-exports is the umbrella's (iOS's `ARKitCore`, `ARKitUI` and `ARKitFoundation`: `arkit`, linked as `ARKit`, as on Mac Catalyst, whose ARKit has them itself); another is in scope by its own name. `dispatch`, `os` and `xpc` name libSystem's libraries (GCD, os_log's and os_unfair_lock's functions, XPC). `--platform ios` reads the iOS SDK (arm64) and iOS's availability; `--platform maccatalyst` the macOS SDK with its iOS frameworks (`/System/iOSSupport`) and Mac Catalyst's availability (clang infers it from iOS's), a framework there named as on iOS (hxmc's linker finds its Catalyst build). The dump is read one top-level declaration at a time (an SDK's is gigabytes). `--json` and `--text` read existing dumps instead of running clang; `--keep-dumps` keeps the ones it makes (in `<out-dir>/.clang`).
+
+`bin/objc-extern-gen slice <out-dir> <macos-dir> <ios-dir> <maccatalyst-dir>` writes the libraries, each a haxelib (`haxelib.json`, `src/`).
 
 The generated declarations are derived from Apple's headers: they are not part of this repository, and they carry none of the headers' comments.
 
 ## Rules
 
-What the declarations make of the headers (decided in [#1](https://github.com/back2dos/hxmc-objc-extern-gen/issues/1)):
+What the declarations make of the headers (decided in [#1](https://github.com/hx-objc/extern-generator/issues/1)):
 
 - **Properties** are `var x(get, set)`. One readonly in a class and readwrite in a subclass (`NSPanel.floatingPanel`) gets only its setter in the subclass (`panel.set_floatingPanel(true)`): Haxe does not let a subclass redefine the variable, and a setter on the superclass would accept calls that fail at run time.
 - **Informal protocols**, categories of `NSObject` that name methods for other objects to implement (`controlTextDidChange:`, `validateMenuItem:`), are left out (`skipped.txt` lists them): those outside NSObject's own headers that a formal protocol of their name supersedes, or whose methods all take their sender first (named `sender`, a notification, or an object of the class the selector's first piece names).

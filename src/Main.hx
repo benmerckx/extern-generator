@@ -1,15 +1,17 @@
-// hxmc-objc-extern-gen: Haxe extern declarations of the macOS SDK's Objective-C
-// classes for hxmc (its docs/interop.md, "Objective-C"), from clang's AST of
-// `#import <AppKit/AppKit.h>`.
+// extern-generator: Haxe extern declarations of the Apple SDKs' Objective-C
+// and C APIs for hxmc (its docs/interop.md, "Objective-C"), from clang's AST.
 //
-//   objc-extern-gen <out-dir> [--json ast.json --text ast.txt [--macros macros.txt]] [--frameworks Foundation,AppKit,...] [--platform macos|ios|maccatalyst] [--keep-dumps] [--check]
+//   objc-extern-gen <out-dir> [--frameworks all|Foundation,AppKit,...] [--platform macos|ios|maccatalyst] [--sdk path] [--json ast.json --text ast.txt [--macros macros.txt]] [--keep-dumps] [--check]
+//   objc-extern-gen slice <out-dir> <macos-dir> <ios-dir> <maccatalyst-dir> [--sdk-versions text]
 //
 // Without --json/--text it runs clang (twice: the JSON dump for the
 // declarations, the text dump for their availability, which the JSON dump
 // does not spell out; and the preprocessor, for the constant macros), into <out-dir>/.clang, deleted after unless
 // --keep-dumps. A framework inside another (HIServices) is read from its
-// outer framework's header. --check also writes <out-dir>/ObjcExternsCheck.hx, a
-// program naming every generated type.
+// outer framework's header. --frameworks all: every framework of the SDK
+// that imports and that the platform links (Sdk.allFrameworks). --check also
+// writes <out-dir>/ObjcExternsCheck.hx, a program naming every generated type.
+// `slice` splits the three platforms' outputs into libraries (Slice).
 class Main {
 	static function stamp(what:String, t0:Float):Float {
 		var t = haxe.Timer.stamp();
@@ -23,7 +25,7 @@ class Main {
 
 	// the umbrella header that declares framework `f`: its own, or its outer
 	// framework's for a sub-framework (HIServices: ApplicationServices)
-	static function umbrella(sdk:String, f:String):String {
+	static function umbrella(sdk:Sdk, f:String):String {
 		// libSystem's libraries in scope (Model's Origin): their headers
 		switch f {
 			case "dispatch": return "<dispatch/dispatch.h>";
@@ -31,62 +33,78 @@ class Main {
 			case "os": return "<os/log.h>\n#import <os/lock.h>\n#import <os/signpost.h>\n#import <os/workgroup.h>";
 			case _:
 		}
-		var dir = sdk + "/System/Library/Frameworks";
-		if (!sys.FileSystem.exists('$dir/$f.framework'))
+		for (dir in sdk.frameworkDirs())
+			if (sys.FileSystem.exists('$dir/$f.framework')) return '<$f/$f.h>';
+		for (dir in sdk.frameworkDirs())
 			for (u in sys.FileSystem.readDirectory(dir))
-				if (sys.FileSystem.exists('$dir/$u/Frameworks/$f.framework')) {
+				if (sys.FileSystem.exists('$dir/$u/Frameworks/$f.framework') || sys.FileSystem.exists('$dir/$u/Versions/A/Frameworks/$f.framework')) {
 					var name = haxe.io.Path.withoutExtension(u);
 					return '<$name/$name.h>';
 				}
 		return '<$f/$f.h>';
 	}
 
+	static final USAGE = "usage: objc-extern-gen <out-dir> [--frameworks all|Foundation,AppKit,...] [--platform macos|ios|maccatalyst] [--sdk path] [--json ast.json --text ast.txt [--macros macros.txt]] [--keep-dumps] [--check]\n"
+		+ "       objc-extern-gen slice <out-dir> <macos-dir> <ios-dir> <maccatalyst-dir> [--sdk-versions text]";
+
 	static function main() {
 		var args = Sys.args();
+		if (args[0] == "slice") {
+			Slice.run(args.slice(1));
+			return;
+		}
 		var platform = "macos";
 		var out:Null<String> = null, json:Null<String> = null, text:Null<String> = null, macrosFile:Null<String> = null, check = false, keep = false;
+		var sdkPath:Null<String> = null;
 		var scope = ["Foundation", "AppKit", "CoreGraphics", "CoreText", "QuartzCore", "UniformTypeIdentifiers"];
+		var all = false;
 		var i = 0;
 		while (i < args.length) {
 			switch args[i] {
 				case "--json": json = args[++i];
 				case "--text": text = args[++i];
 				case "--macros": macrosFile = args[++i];
-				case "--frameworks": scope = args[++i].split(",");
+				case "--frameworks":
+					var f = args[++i];
+					if (f == "all") all = true else scope = f.split(",");
 				case "--check": check = true;
 				case "--keep-dumps": keep = true;
 				case "--platform": platform = args[++i];
+				case "--sdk": sdkPath = args[++i];
 				case a: out = a;
 			}
 			i++;
 		}
-		if (out == null) {
-			Sys.println("usage: objc-extern-gen <out-dir> [--json ast.json --text ast.txt [--macros macros.txt]] [--frameworks Foundation,AppKit,...] [--platform macos|ios|maccatalyst] [--keep-dumps] [--check]");
+		if (out == null || !["macos", "ios", "maccatalyst"].contains(platform)) {
+			Sys.println(USAGE);
 			Sys.exit(1);
 		}
 		sys.FileSystem.createDirectory(out);
 		var t = haxe.Timer.stamp();
+		var sdk = new Sdk(sdkPath != null ? sdkPath : Sdk.locate(platform), platform);
+		Model.Origin.umbrellas = sdk.reexports();
 		var tmp = out + "/.clang", ran = json == null || text == null;
+		if (all) {
+			sys.FileSystem.createDirectory(tmp);
+			scope = sdk.allFrameworks(tmp);
+			t = stamp('scope: ${scope.length} frameworks', t);
+		}
 		if (ran) {
 			sys.FileSystem.createDirectory(tmp);
-			// (iOS: the device's SDK, arm64; macOS: the host's; Mac Catalyst: the
-			// macOS SDK with its iOS frameworks, /System/iOSSupport)
-			var sdkName = platform == "ios" ? "iphoneos" : "macosx";
-			shell('xcrun --sdk $sdkName --show-sdk-path > $tmp/sdk-path');
-			var sdk = StringTools.trim(sys.io.File.getContent('$tmp/sdk-path'));
-			sys.io.File.saveContent(tmp + "/sdk.m", [for (f in scope) '#import ${umbrella(sdk, f)}\n'].join(""));
+			var seen = new Map<String, Bool>(), imports = [];
+			for (f in scope) {
+				var u = umbrella(sdk, f);
+				if (!seen.exists(u)) imports.push('#import $u\n');
+				seen.set(u, true);
+			}
+			sys.io.File.saveContent(tmp + "/sdk.m", imports.join(""));
 			json = tmp + "/ast.json";
 			text = tmp + "/ast.txt";
-			var target = switch platform {
-				case "ios": ' -target arm64-apple-ios17.0 -isysroot $sdk';
-				case "maccatalyst": ' -target arm64-apple-ios17.0-macabi -isysroot $sdk -iframework $sdk/System/iOSSupport/System/Library/Frameworks -isystem $sdk/System/iOSSupport/usr/include';
-				case _: "";
-			}
-			var cc = "clang -fsyntax-only -x objective-c" + target;
+			var cc = "clang -fsyntax-only -x objective-c" + sdk.clangFlags();
 			shell('$cc -Xclang -ast-dump=json $tmp/sdk.m > $json');
 			shell('$cc -Xclang -ast-dump -fno-color-diagnostics $tmp/sdk.m > $text');
 			macrosFile = tmp + "/macros.txt";
-			shell('clang -E -dD -x objective-c' + target + ' $tmp/sdk.m > $macrosFile');
+			shell('clang -E -dD -x objective-c' + sdk.clangFlags() + ' $tmp/sdk.m > $macrosFile');
 			t = stamp("clang (json and text dumps)", t);
 		}
 		Avail.platform = platform;
@@ -105,11 +123,7 @@ class Main {
 			gen.macros = ms;
 			t = stamp("macros", t);
 		}
-		if (ran && !keep) {
-			for (f in sys.FileSystem.readDirectory(tmp))
-				sys.FileSystem.deleteFile('$tmp/$f');
-			sys.FileSystem.deleteDirectory(tmp);
-		}
+		if (ran && !keep) removeTree(tmp);
 		gen.prepare();
 		gen.closure();
 		var modules = gen.write(out);
@@ -149,5 +163,14 @@ class Main {
 			b.add("\t\t}\n\t}\n}\n");
 			sys.io.File.saveContent(out + "/ObjcExternsCheck.hx", b.toString());
 		}
+	}
+
+	public static function removeTree(p:String) {
+		if (!sys.FileSystem.exists(p)) return;
+		if (sys.FileSystem.isDirectory(p)) {
+			for (f in sys.FileSystem.readDirectory(p))
+				removeTree('$p/$f');
+			sys.FileSystem.deleteDirectory(p);
+		} else sys.FileSystem.deleteFile(p);
 	}
 }
