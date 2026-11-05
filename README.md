@@ -8,17 +8,19 @@ The generator is plain Haxe and builds with hxmc.
 
 ## Libraries
 
-An app depends on its platform's library, which brings the shared ones:
+A program depends on its platform's library, which brings the shared ones:
 
-| platform | library | with |
-|---|---|---|
-| macOS | [apple-appkit](https://github.com/hx-objc/apple-appkit) | [apple-shared](https://github.com/hx-objc/apple-shared), [apple-shared-mac](https://github.com/hx-objc/apple-shared-mac) |
-| iOS | [apple-uikit](https://github.com/hx-objc/apple-uikit) | apple-shared, [apple-shared-uikit](https://github.com/hx-objc/apple-shared-uikit) |
-| Mac Catalyst | [apple-catalyst](https://github.com/hx-objc/apple-catalyst) | apple-shared, apple-shared-uikit, apple-shared-mac |
+| platform | hxmc targets | library | brings |
+|---|---|---|---|
+| macOS | `macos-arm64`, `macos-x86_64` | [apple-appkit](https://github.com/hx-objc/apple-appkit) | [apple-shared](https://github.com/hx-objc/apple-shared), [apple-shared-mac](https://github.com/hx-objc/apple-shared-mac) |
+| iOS | `ios-arm64`, `ios-sim-arm64` | [apple-uikit](https://github.com/hx-objc/apple-uikit) | apple-shared, [apple-shared-uikit](https://github.com/hx-objc/apple-shared-uikit) |
+| Mac Catalyst | `macos-catalyst-arm64`, `macos-catalyst-x86_64` | [apple-catalyst](https://github.com/hx-objc/apple-catalyst) | apple-shared, apple-shared-uikit, apple-shared-mac |
+
+A program using only Foundation, Core Graphics or another framework every platform has depends on its platform's library too: Foundation's main classes are not the same on every platform (`NSString` takes AppKit's drawing methods on macOS, UIKit's on iOS), so they are in the platform libraries. A program links only the frameworks whose declarations it uses. How hxmc uses them: [interop.md](https://github.com/benmerckx/hxmc/blob/main/docs/interop.md#the-sdks-declarations).
 
 Optional: [apple-matter](https://github.com/hx-objc/apple-matter) (Matter, the SDKs' largest framework, on every platform) and [apple-appkit-legacy](https://github.com/hx-objc/apple-appkit-legacy) (macOS's frameworks gone in all but name, OpenGL, QuickDraw, Tcl, Ruby, ..., and the classes deprecated as a whole that nothing else names).
 
-Each module is in the library of the platforms where its text is the same (`objc-extern-gen slice`, src/Slice.hx), so a platform's libraries have each type once, and together are the platform's whole output. They refer to each other's types by their paths, without declaring a dependency where they cannot (a shared library on a platform's): a library used without the ones it refers to fails where such a type is used, not before.
+Each module is in the library of the platforms where its text is the same (`objc-extern-gen slice`, src/Slice.hx), so a platform's libraries have each type once, and together are the platform's whole output. They refer to each other's types by their paths, without declaring a dependency where they cannot (a shared library on a platform's): a library used without the ones it refers to fails where such a type is used, not before: the shared libraries are not for use on their own.
 
 ## Use
 
@@ -33,7 +35,7 @@ tools/publish.sh out/sdk/libs # pushes the libraries to their repositories
 
 `bin/objc-extern-gen <out-dir> [--frameworks all|Foundation,AppKit,...] [--platform macos|ios|maccatalyst] [--check]` writes a package per framework (`appkit.NSView`, `foundation.NSString`, ...), one module per class or protocol, `skipped.txt` (what was left out and why) and, with `--check`, `ObjcExternsCheck.hx`, a program naming every type. `--frameworks all` is the whole SDK: every framework with an umbrella header that imports on its own and that the platform links (its `.tbd` names the platform: Mac Catalyst links 55 fewer than macOS), `Kerberos` aside (it redefines `GSS`'s types), `CoreHaptics` and `NetworkExtension` imported first (else `AVFAudio`'s `AVAudioSession` and `AccessorySetupKit`'s `ASAccessory` are unavailable to them), AppKit not on Mac Catalyst. A framework inside another (`HIServices`, the Accessibility API, in `ApplicationServices`) is read through its outer framework's header. One in `/System/Library/SubFrameworks` that an umbrella re-exports is the umbrella's (iOS's `ARKitCore`, `ARKitUI` and `ARKitFoundation`: `arkit`, linked as `ARKit`, as on Mac Catalyst, whose ARKit has them itself); another is in scope by its own name. `dispatch`, `os` and `xpc` name libSystem's libraries (GCD, os_log's and os_unfair_lock's functions, XPC). `--platform ios` reads the iOS SDK (arm64) and iOS's availability; `--platform maccatalyst` the macOS SDK with its iOS frameworks (`/System/iOSSupport`) and Mac Catalyst's availability (clang infers it from iOS's), a framework there named as on iOS (hxmc's linker finds its Catalyst build). The dump is read one top-level declaration at a time (an SDK's is gigabytes). `--json` and `--text` read existing dumps instead of running clang; `--keep-dumps` keeps the ones it makes (in `<out-dir>/.clang`).
 
-`bin/objc-extern-gen slice <out-dir> <macos-dir> <ios-dir> <maccatalyst-dir>` writes the libraries, each a haxelib (`haxelib.json`, `src/`) and an npm package that hxmc takes as a library (`package.json`'s `"haxe"` field): `npm install -D github:hx-objc/apple-appkit` and `-lib apple-appkit`, or `lix install gh:hx-objc/apple-appkit`. With npm a project needs no lix scope, whose `.haxerc` makes VS Code's Haxe extension start the compilation server with `--wait stdio`, which Haxe 5, hence hxmc, does not have.
+`bin/objc-extern-gen slice <out-dir> <macos-dir> <ios-dir> <maccatalyst-dir>` writes the libraries, each a haxelib (`haxelib.json`, `src/`) and an npm package that hxmc takes as a library (`package.json`'s `"haxe"` field): `npm install -D github:hx-objc/apple-appkit` and `-lib apple-appkit`, `lix install gh:hx-objc/apple-appkit`, or `haxelib git apple-appkit https://github.com/hx-objc/apple-appkit` (`haxelib.json` names the dependencies by their Git URLs). With npm a project needs no lix scope, whose `.haxerc` makes VS Code's Haxe extension start the compilation server with `--wait stdio`, which Haxe 5, hence hxmc, does not have.
 
 The generated declarations are derived from Apple's headers: they are not part of this repository, and they carry none of the headers' comments.
 

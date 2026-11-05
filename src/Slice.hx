@@ -227,15 +227,16 @@ class Slice {
 		b.add("## Install\n\n");
 		b.add("With npm (hxmc takes the package as a library):\n\n");
 		b.add('```sh\nnpm install -D github:hx-objc/${lib.name}\n```\n\n');
-		b.add('then `-lib ${lib.name}`. Or with lix: `lix install gh:hx-objc/${lib.name}`. (A lix scope\'s `.haxerc` makes VS Code\'s Haxe extension start the compilation server with `--wait stdio`, which hxmc, as Haxe 5, does not have: use npm there.)\n\n');
+		b.add('then `-lib ${lib.name}`. Or with lix: `lix install gh:hx-objc/${lib.name}`; or with haxelib: `haxelib git ${lib.name} https://github.com/hx-objc/${lib.name}` (`haxelib.json` names the dependencies by their Git URLs). (A lix scope\'s `.haxerc` makes VS Code\'s Haxe extension start the compilation server with `--wait stdio`, which hxmc, as Haxe 5, does not have: use npm there.)\n\n');
 		b.add("## Which libraries\n\n");
-		b.add("An app depends on its platform's library, which brings the shared ones:\n\n");
-		b.add("| platform | library | with |\n|---|---|---|\n");
-		b.add("| macOS | `apple-appkit` | `apple-shared`, `apple-shared-mac` |\n");
-		b.add("| iOS | `apple-uikit` | `apple-shared`, `apple-shared-uikit` |\n");
-		b.add("| Mac Catalyst | `apple-catalyst` | `apple-shared`, `apple-shared-uikit`, `apple-shared-mac` |\n\n");
+		b.add("A program depends on its platform's library, which brings the shared ones:\n\n");
+		b.add("| platform | hxmc targets | library | brings |\n|---|---|---|---|\n");
+		b.add("| macOS | `macos-arm64`, `macos-x86_64` | `apple-appkit` | `apple-shared`, `apple-shared-mac` |\n");
+		b.add("| iOS | `ios-arm64`, `ios-sim-arm64` | `apple-uikit` | `apple-shared`, `apple-shared-uikit` |\n");
+		b.add("| Mac Catalyst | `macos-catalyst-arm64`, `macos-catalyst-x86_64` | `apple-catalyst` | `apple-shared`, `apple-shared-uikit`, `apple-shared-mac` |\n\n");
+		b.add("A program using only Foundation, Core Graphics or another framework every platform has depends on its platform's library too: a type is in a shared library only where its declaration is the same on those platforms (`apple-shared`: all three; `apple-shared-uikit`: iOS and Mac Catalyst; `apple-shared-mac`: macOS and Mac Catalyst), and Foundation's main classes are not (`NSString` takes AppKit's drawing methods on macOS, UIKit's on iOS). A program links only the frameworks whose declarations it uses.\n\n");
 		b.add("Optional: `apple-matter` (Matter, on every platform) and `apple-appkit-legacy` (macOS's legacy APIs).\n\n");
-		b.add("A platform's libraries have each type once. The shared libraries refer to the platform's types by their paths without depending on a platform library: used on their own, they fail where such a type is used.\n");
+		b.add("A platform's libraries have each type once. The shared libraries refer to the platform's types by their paths without depending on a platform library, and are not for use on their own: they fail where such a type is used.\n");
 		if (!lib.deps.contains("apple-shared") && lib.name != "apple-appkit-legacy")
 			b.add('\nThis library is for ${[for (p in lib.platforms) names.get(p)].join(", ")}' + (lib.name.startsWith("apple-shared") ? ", through the platform libraries above.\n" : ".\n"));
 		return b.toString();
